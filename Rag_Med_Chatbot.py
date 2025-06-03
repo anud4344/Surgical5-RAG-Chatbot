@@ -53,6 +53,7 @@ page_bg_color = """
        padding: 0.6em 1.2em !important;
        display: block;
        margin: 0 auto;
+
      }
 
  
@@ -89,6 +90,29 @@ page_bg_color = """
         transform: scale(1.05);
         transition: 0.3s ease;
     }
+
+div[data-baseweb="select"] {
+    font-size: 18px; !important;
+    border-radius: 8px !important;
+    border: 2px solid white !important;
+    margin: 0 auto !important;
+    width: 100% !important;
+    max-width: 600px;
+}
+
+
+ div[data-baseweb="select"] * {
+     color: white !important;
+     background-color: blue;
+     padding: 2.5px;
+ }
+ 
+ .output-response {
+    font-size: 22px !important;
+    line-height: 1.6;
+    margin: 10px;
+}
+ 
 
     </style>
 """
@@ -136,7 +160,7 @@ def add_to_vector_collection(all_splits: list[Document], file_name: str):
 
     for idx, split in enumerate(all_splits):
        documents.append(split.page_content)
-       metadatas.append(split.metadata)
+       metadatas.append({**split.metadata, "source": file_name})
        ids.append(f"{file_name}_{idx}")
      
     collection.upsert(
@@ -146,9 +170,9 @@ def add_to_vector_collection(all_splits: list[Document], file_name: str):
      )
     st.success("Data added to the vector store!")
 
-def query_collection(prompt: str, n_results: int = 10):
+def query_collection(prompt: str, file_name: str, n_results: int = 10):
     collection = get_vector_collection()
-    results = collection.query(query_texts = [prompt], n_results=n_results)
+    results = collection.query(query_texts = [prompt], n_results=n_results, where={"source": file_name})
     return results 
 
 def call_llm(context: str, prompt: str):
@@ -190,21 +214,28 @@ def re_rank_cross_encoders(documents: list[str]) -> tuple[str, list[int]]:
 if __name__ == "__main__":
   with st.sidebar:
   
-    uploaded_file = st.file_uploader(
-         "**📁 Upload PDF files for QnA**", type=["pdf"], accept_multiple_files=False
+    uploaded_files = st.file_uploader(
+         "**📁 Upload PDF files for QnA**", type=["pdf"], accept_multiple_files = True
     )
 
     process = st.button(
         "⚡Process",
       )
 
-    if uploaded_file and process:
-      normalize_uploaded_file_name = uploaded_file.name.translate(
-        str.maketrans({"-": "_", ".": "_", " ": "_"}) 
-      )
-      all_splits = process_document(uploaded_file)
-      add_to_vector_collection(all_splits, normalize_uploaded_file_name)
+    if uploaded_files and process:
+      if "uploaded_filenames" not in st.session_state:
+             st.session_state.uploaded_filenames = []
+      for uploaded_file in uploaded_files:
+            normalize_uploaded_file_name = uploaded_file.name.translate(
+              str.maketrans({"-": "_", ".": "_", " ": "_"}) 
+            )
+   
+            if normalize_uploaded_file_name not in st.session_state.uploaded_filenames:
+                 all_splits = process_document(uploaded_file)
+                 add_to_vector_collection(all_splits, normalize_uploaded_file_name)
+                 st.session_state.uploaded_filenames.append(normalize_uploaded_file_name)
 
+ 
   def get_base64_image(path):
     with open(path, "rb") as img_file:
         return "data:image/jpeg;base64," + b64encode(img_file.read()).decode()
@@ -214,7 +245,7 @@ if __name__ == "__main__":
      f"""
          <div style="text-align: center; margin-bottom: 50px;">
              <img src = "{img}" style = "width: 250px; height: 250px; margin-bottom: 30px;  border: 5px solid blue; border-radius: 15px;">
-              <h2 style="white-space: nowrap;"> RAG-powered Medical Document Chatbot </h2>
+              <h2 style="white-space: nowrap; font-weight: bold;"> RAG-powered Medical Document Chatbot </h2>
          </div>
       """,
     unsafe_allow_html=True,
@@ -222,7 +253,7 @@ if __name__ == "__main__":
 
 st.markdown(
     """
-    <p style = "font-size: 25px; font-weight: 500; margin-bottom: 15px; text-align: center;">
+    <p style = "font-size: 25px; font-weight: 500; margin-bottom: 15px; text-align: center; font-weight: bold;">
          Ask a question related to your medical document: 
     </p>
     """,
@@ -235,8 +266,6 @@ prompt = st.text_area(
      label_visibility="collapsed",
      key="prompt_area"
 )
-
-
 
 col1, col2, col3 = st.columns([1, 2, 1])
 
@@ -258,12 +287,44 @@ with col2:
          "🔥 Ask",
       )
 
-if ask and prompt:
-      results = query_collection(prompt)
+
+selected_doc = None
+
+if "uploaded_filenames" in st.session_state:
+    st.markdown(
+        """
+        <div style="text-align: center; font-size: 25px; margin-top: 30px; margin-bottom: 15px; font-weight: bold;">
+            Choose a document to query:
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    selected_doc = st.selectbox(" ", st.session_state.uploaded_filenames, label_visibility="collapsed")
+
+
+
+if ask and prompt and selected_doc:
+      results = query_collection(prompt, file_name = selected_doc)
       context = results.get("documents")[0]
       relevant_text, relevant_text_ids = re_rank_cross_encoders(context)
-      response = call_llm(context=relevant_text, prompt=prompt)
-      st.write_stream(response)
+
+      placeholder = st.empty()  
+      streamed_text = ""        
+
+      response = call_llm(context=relevant_text, prompt=prompt) 
+
+      for chunk in response:
+         streamed_text += chunk  
+         placeholder.markdown(
+           f"""
+          <div class="output-response">
+            <p style="white-space: pre-wrap;">{streamed_text}</p>
+          </div>
+        """,
+        unsafe_allow_html=True
+         )
+        
 
       with st.expander("See retrieved documents"):
           st.write(results)
